@@ -1,0 +1,12 @@
+Package: git-gemini-commit
+Version: 1.0.0
+Section: utils
+Priority: optional
+Architecture: all
+Depends: git, curl, jq
+Maintainer: Votre Nom <votre.email@exemple.com>
+Description: Générer automatiquement des messages de commit avec l'API Gemini
+ Cet outil permet de générer automatiquement des messages de commit Git
+ en utilisant l'API Gemini de Google pour analyser vos modifications.
+ Il extrait les modifications ajoutées à l'index Git et demande à l'IA
+ de formuler un message de commit descriptif et pertinent.

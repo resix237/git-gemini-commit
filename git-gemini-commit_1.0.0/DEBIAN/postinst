@@ -1,0 +1,6 @@
+#!/bin/bash
+echo "Installation de git-gemini-commit terminée !"
+echo "Pour configurer votre clé API Gemini, exécutez :"
+echo "git config --global gemini.apikey VOTRE_CLE_API"
+echo "Vous pouvez maintenant utiliser la commande 'git-gemini-commit' pour générer des messages de commit avec l'IA."
+exit 0
