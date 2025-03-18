@@ -4,7 +4,7 @@ Section: utils
 Priority: optional
 Architecture: all
 Depends: git, curl, jq
-Maintainer: Votre Nom <votre.email@exemple.com>
+Maintainer: Votre Fouda Marc <foudamarcarthur@gmail.com>
 Description: Générer automatiquement des messages de commit avec l'API Gemini
  Cet outil permet de générer automatiquement des messages de commit Git
  en utilisant l'API Gemini de Google pour analyser vos modifications.
