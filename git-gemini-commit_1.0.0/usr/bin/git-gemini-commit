@@ -55,40 +55,17 @@ clean_response() {
     echo "$text" | sed 's/```[a-zA-Z]*//g' | sed 's/```//g'
 }
 
-# Fonction principale
-main() {
-    # Vérifier les dépendances
-    check_dependencies
-    
-    # Vérifier si le répertoire est un dépôt Git
-    if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-        error_exit "Ce n'est pas un dépôt Git."
-    fi
-    
-    # Récupérer les modifications
-    git_diff=$(git diff --staged --stat)
-    diff_content=$(git diff --staged)
-    
-    # Vérifier s'il y a des modifications
-    if [ -z "$git_diff" ]; then
-        error_exit "Aucune modification n'a été ajoutée à l'index. Utilisez 'git add' pour ajouter des fichiers."
-    fi
-    
-    # Afficher les modifications
-    echo "Modifications détectées :"
-    echo "$git_diff"
-    echo "-----------------------------------------"
-    
-    # Récupérer la clé API
-    api_key=$(get_api_key)
+# Fonction pour traiter un diff et obtenir une suggestion via l'API
+process_diff_chunk() {
+    local api_key="$1"
+    local git_diff_stat="$2"
+    local diff_chunk="$3"
     
     # Formater le prompt pour éviter les problèmes avec les caractères spéciaux
-    prompt_text="Génère un message de commit concis et descriptif pour les modifications suivantes dans mon dépôt Git : $git_diff. Détails des modifications : $diff_content. Assure-toi que la première ligne est un titre court et concis, puis ajoute une ligne vide suivie d'une description plus détaillée. N'utilise pas de formatage markdown ni de symboles backticks."
+    prompt_text="Génère un message de commit concis et descriptif pour les modifications suivantes dans mon dépôt Git : $git_diff_stat. Détails des modifications : $diff_chunk. Assure-toi que la première ligne est un titre court et concis, puis ajoute une ligne vide suivie d'une description plus détaillée. N'utilise pas de formatage markdown ni de symboles backticks."
     
     # Échapper les caractères spéciaux pour JSON
     prompt_json=$(echo "$prompt_text" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | sed 's/\n/\\n/g' | sed 's/\t/\\t/g')
-    
-    echo "Consultation de l'API Gemini pour générer un message de commit..."
     
     # Appeler l'API Gemini
     response=$(curl "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$api_key" \
@@ -117,6 +94,122 @@ main() {
 
     # Nettoyer le message des backticks potentiels
     commit_message=$(clean_response "$commit_message")
+    
+    echo "$commit_message"
+}
+
+# Fonction principale
+main() {
+    # Vérifier les dépendances
+    check_dependencies
+    
+    # Vérifier si le répertoire est un dépôt Git
+    if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+        error_exit "Ce n'est pas un dépôt Git."
+    fi
+    
+    # Récupérer les modifications
+    git_diff=$(git diff --staged --stat)
+    diff_content=$(git diff --staged)
+    
+    # Vérifier s'il y a des modifications
+    if [ -z "$git_diff" ]; then
+        error_exit "Aucune modification n'a été ajoutée à l'index. Utilisez 'git add' pour ajouter des fichiers."
+    fi
+    
+    # Afficher les modifications
+    echo "Modifications détectées :"
+    echo "$git_diff"
+    echo "-----------------------------------------"
+    
+    # Récupérer la clé API
+    api_key=$(get_api_key)
+    
+    # Définir la taille maximale pour les requêtes
+    MAX_CHARS=4000
+    
+    # Vérifier si le diff est trop grand
+    if [ ${#diff_content} -gt $MAX_CHARS ]; then
+        echo "Les modifications sont volumineuses, traitement séquentiel par fichier..."
+        
+        # Traiter les fichiers individuellement
+        files_changed=$(git diff --staged --name-only)
+        all_responses=""
+        
+        # Créer un répertoire temporaire pour stocker les réponses par fichier
+        temp_dir=$(mktemp -d)
+        
+        # Compteur pour surveiller le nombre de fichiers traités
+        file_count=0
+        total_files=$(echo "$files_changed" | wc -l)
+        
+        # Traiter chaque fichier
+        for file in $files_changed; do
+            file_count=$((file_count + 1))
+            echo "Traitement du fichier ($file_count/$total_files): $file"
+            
+            # Obtenir le diff pour ce fichier spécifique
+            file_diff=$(git diff --staged -- "$file")
+            file_diff_stat=$(git diff --staged --stat -- "$file")
+            
+            # Si même le diff d'un seul fichier est trop grand, on prend juste le début
+            if [ ${#file_diff} -gt $MAX_CHARS ]; then
+                echo "  - Le diff de ce fichier est large, troncature appliquée"
+                file_diff="${file_diff:0:$MAX_CHARS}... [tronqué pour l'API]"
+            fi
+            
+            # Obtenir une suggestion pour ce fichier
+            echo "  - Consultation de l'API pour ce fichier..."
+            file_response=$(process_diff_chunk "$api_key" "$file_diff_stat" "$file_diff")
+            
+            # Stocker la réponse dans un fichier temporaire
+            echo "Fichier: $file" > "$temp_dir/$file_count-$file.txt"
+            echo "$file_response" >> "$temp_dir/$file_count-$file.txt"
+            echo "" >> "$temp_dir/$file_count-$file.txt"
+            
+            all_responses="$all_responses\n--- $file ---\n$file_response\n\n"
+        done
+        
+        echo "Génération d'un message de commit consolidé..."
+        
+        # Créer un prompt pour résumer toutes les modifications
+        final_prompt="Voici des descriptions de plusieurs changements dans des fichiers. Génère un message de commit global qui résume tous ces changements. Assure-toi que la première ligne est un titre court et concis, puis ajoute une ligne vide suivie d'une description plus détaillée:\n\n$(cat "$temp_dir"/*)"
+        
+        # Échapper pour JSON
+        final_prompt_json=$(echo "$final_prompt" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | sed 's/\n/\\n/g' | sed 's/\t/\\t/g')
+        
+        # Faire une dernière requête pour obtenir un message consolidé
+        final_response=$(curl "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$api_key" \
+        -H "Content-Type: application/json" \
+        -X POST \
+        -d "{
+            \"contents\": [{
+            \"parts\": [{
+                \"text\": \"$final_prompt_json\"
+            }]
+            }]
+        }")
+        
+        # Extraire le message final
+        if command -v jq &> /dev/null; then
+            commit_message=$(echo "$final_response" | jq -r '.candidates[0].content.parts[0].text' 2>/dev/null)
+        else
+            if command -v python3 &> /dev/null; then
+                commit_message=$(echo "$final_response" | python3 -c "import sys, json; print(json.load(sys.stdin)['candidates'][0]['content']['parts'][0]['text'])" 2>/dev/null)
+            else
+                commit_message=$(echo "$final_response" | grep -o '"parts":\[{"text":"[^"]*"' | sed 's/"parts":\[{"text":"//g' | sed 's/"//g')
+            fi
+        fi
+        
+        # Nettoyer le message
+        commit_message=$(clean_response "$commit_message")
+        
+        # Nettoyer les fichiers temporaires
+        rm -rf "$temp_dir"
+    else
+        echo "Consultation de l'API Gemini pour générer un message de commit..."
+        commit_message=$(process_diff_chunk "$api_key" "$git_diff" "$diff_content")
+    fi
 
     # Extraire le titre et la description
     commit_title=$(echo "$commit_message" | head -n 1)
